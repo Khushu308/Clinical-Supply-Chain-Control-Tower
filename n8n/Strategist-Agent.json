@@ -1,0 +1,280 @@
+{
+  "name": "Strategist-Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "public": true,
+        "options": {
+          "loadPreviousSession": "memory"
+        }
+      },
+      "id": "a94613ab-c11f-42a2-bf24-a7f1dc205118",
+      "name": "Chat Trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        384,
+        -144
+      ],
+      "webhookId": "1ae0e39a-8d82-401e-a9ed-633bdb3da870"
+    },
+    {
+      "parameters": {},
+      "id": "3b93ad44-92f5-4b88-b7e7-721edf1f1d98",
+      "name": "Conversation Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        464,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Query the re_evaluation table to check if a material or batch has been re-evaluated before. Use Lot Number (Molecule Planner to Complete) column for batch/lot lookups. Check Request Type and Sample Status columns for re-evaluation history.",
+        "operation": "executeQuery",
+        "query": "={{ $fromAI(\"re_evaluation_query\", \"SQL query to check re-evaluation data. Table: \\\"re-evaluation\\\" (note: table name has hyphen, must be quoted). Key columns: 'Lot Number (Molecule Planner to Complete)' for batch/lot, 'Request Type (Molecule Planner to Complete)' for extension/retest type, 'Sample Status (NDP Material Coordinator to Complete)' for status. Example: SELECT * FROM \\\"re-evaluation\\\" WHERE \\\"Lot Number (Molecule Planner to Complete)\\\" = '123'\", \"string\") }}",
+        "options": {}
+      },
+      "id": "287acb5c-8300-411c-9e4d-a80d41dd4258",
+      "name": "Re-Evaluation Table Tool",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        864,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ucHiKeha3deCxnpv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Query the rim table to check regulatory approval status for shelf-life extensions. Use health_authority_division_c for country, ly_number_c for material reference, status_v for approval status (e.g., Approved, Submitted), and clinical_study_v for trial information.",
+        "operation": "executeQuery",
+        "query": "={{ $fromAI(\"rim_query\", \"SQL query to check regulatory approval. Table: rim. Key columns: health_authority_division_c for country/region, ly_number_c for material, status_v for approval status, approved_date_c for approval date, clinical_study_v for trial reference. Example: SELECT * FROM rim WHERE health_authority_division_c ILIKE '%Germany%' AND ly_number_c = 'LY123'\", \"string\") }}",
+        "options": {}
+      },
+      "id": "c9155cd1-616e-4438-8c31-74d977fd0048",
+      "name": "RIM Table Tool",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        992,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ucHiKeha3deCxnpv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Query the material_country_requirements table for country-specific regulatory requirements. Use Countries column for country lookups, Material Number for material identification, and Trial Alias for trial references.",
+        "operation": "executeQuery",
+        "query": "={{ $fromAI(\"material_country_query\", \"SQL query to check country-specific material requirements. Table: material_country_requirements. Key columns: \\\"Countries\\\" for country name, \\\"Material Number\\\" for material ID, \\\"Trial Alias\\\" for trial reference. Example: SELECT * FROM material_country_requirements WHERE \\\"Countries\\\" ILIKE '%Germany%' AND \\\"Material Number\\\" = 'MAT456'\", \"string\") }}",
+        "options": {}
+      },
+      "id": "5097573a-768e-4a05-9678-334fa3c156ab",
+      "name": "Material Country Requirements Tool",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        1120,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ucHiKeha3deCxnpv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Query the ip_shipping_timelines_report table to check shipping durations and logistics. Use country_name for country lookups and ip_timeline for shipping duration information to determine if there is enough time for shelf-life extension execution.",
+        "operation": "executeQuery",
+        "query": "={{ $fromAI(\"shipping_timeline_query\", \"SQL query to check shipping timelines. Table: ip_shipping_timelines_report. Key columns: country_name for destination country, ip_timeline for shipping duration (e.g., '6 days door-to-door'), ip_helper for additional info. Example: SELECT * FROM ip_shipping_timelines_report WHERE country_name ILIKE '%Germany%'\", \"string\") }}",
+        "options": {}
+      },
+      "id": "404fdc49-426d-4d55-bead-ee1da8a3ba2a",
+      "name": "IP Shipping Timelines Tool",
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        1248,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ucHiKeha3deCxnpv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n\t\"decision\": \"YES\",\n\t\"reasoning\": \"Detailed explanation citing data from all three constraint checks\",\n\t\"technical_check\": \"Data found in Re-Evaluation table\",\n\t\"regulatory_check\": \"Data found in RIM or Material Country Requirements table\",\n\t\"logistical_check\": \"Data found in IP Shipping Timelines table\"\n}"
+      },
+      "id": "faa0fe50-b403-4f91-964f-32db54f16e0c",
+      "name": "Structured Response Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1376,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        736,
+        80
+      ],
+      "id": "2106875e-fbf1-4718-a91c-c8afd14bb205",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "DoR2Jh0X7cMah2VS",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a Shelf-Life Extension Feasibility Advisor for pharmaceutical materials.\n\nYour role is to help managers determine if expiring stock can be saved via shelf-life extension by analyzing ALL THREE critical constraints:\n\n1. **Technical Constraint**: Check if the material has been re-evaluated before by querying the Re-Evaluation Table Tool\n2. **Regulatory Constraint**: Verify if the extension submission is approved in the target country by querying the RIM Table Tool or Material Country Requirements Tool\n3. **Logistical Constraint**: Confirm there is sufficient time to execute the extension by querying the IP Shipping Timelines Tool\n\nIMPORTANT RULES:\n- You MUST query ALL THREE tools for every shelf-life extension question, even if one check fails\n- Always call Re-Evaluation Table Tool, RIM/Material Country Requirements Tool, AND IP Shipping Timelines Tool\n- Document what you found (or didn't find) in each table\n- Provide a clear YES or NO decision based on ALL three constraints\n- If data is missing from a table, state \"No data found\" rather than skipping the check\n- Explain your reasoning citing specific data from all three tables\n\nYou can also answer general queries about the database contents. Always be specific and cite your sources."
+        }
+      },
+      "id": "01fbf01a-f809-49cd-816b-1a03db7f1e79",
+      "name": "Strategist Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        992,
+        -144
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Chat Trigger": {
+      "main": [
+        [
+          {
+            "node": "Strategist Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conversation Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Strategist Agent",
+            "type": "ai_memory",
+            "index": 0
+          },
+          {
+            "node": "Chat Trigger",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-Evaluation Table Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "Strategist Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RIM Table Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "Strategist Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Material Country Requirements Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "Strategist Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IP Shipping Timelines Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "Strategist Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Response Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Strategist Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Strategist Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "89c738ba-7ba5-4a5e-bbe2-5a4692f9d8d8",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "34c991ea5317f80b642eebcde858ed7175f85244942bc7f65c5f6cd8a1058240"
+  },
+  "id": "g2DP71eLdiEj5DhR",
+  "tags": []
+}

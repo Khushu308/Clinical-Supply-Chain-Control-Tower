@@ -1,0 +1,323 @@
+{
+  "name": "Autonomous Supply Chain",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "ec350eb3-d1cb-451e-9dee-37fe46415faf",
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        1296,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "id-1",
+              "name": "emailRecipient",
+              "value": "khushboopatil3008@gmail.com",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "8926e27f-de56-48e1-af4e-347b5b8d9443",
+      "name": "Workflow Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1520,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Analyze the supply chain data from the three data sources: Allocated Materials, Available Inventory, and Enrollment Rate Report. Current date: {{ $now.toISO() }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are the Supply Watchdog Agent, an autonomous supply chain monitoring system.\n\nYou have access to supply chain data from three sources in the workflow inputs.\n\nYour task is to:\n1. Analyze the data to identify expiry risks and shortfall predictions\n2. Generate a structured JSON alert payload with:\n   - alertType: \"expiry_alert\", \"shortfall_alert\", \"combined_alert\", or \"no_alert\"\n   - timestamp: current ISO timestamp\n   - summary: A concise executive summary of the risks found\n\nFor expiry analysis:\n- Critical: batches expiring in <30 days\n- High: batches expiring in 30-59 days  \n- Medium: batches expiring in 60-90 days\n\nFor shortfall prediction:\n- Compare projected demand (8 weeks) against current inventory\n- Flag materials running out within 8 weeks\n\nIMPORTANT:\n- Only include alerts if actual risks are detected\n- Set alertType to \"no_alert\" if no issues found\n- Return ONLY the structured JSON output as defined by the output parser\n- Do NOT call any tools - analyze the data directly and return the result",
+          "maxIterations": 5
+        }
+      },
+      "id": "386ad4c4-50ce-403a-ad66-de4efdf7ddf0",
+      "name": "Supply Watchdog Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        1968,
+        800
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"alertType\": {\n      \"type\": \"string\",\n      \"enum\": [\"expiry_alert\", \"shortfall_alert\", \"combined_alert\", \"no_alert\"]\n    },\n    \"timestamp\": {\n      \"type\": \"string\",\n      \"format\": \"date-time\"\n    },\n    \"expiryAlerts\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"critical\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"batchId\": {\"type\": \"string\"},\n              \"material\": {\"type\": \"string\"},\n              \"quantity\": {\"type\": \"number\"},\n              \"expiryDate\": {\"type\": \"string\"},\n              \"daysUntilExpiry\": {\"type\": \"number\"}\n            }\n          }\n        },\n        \"high\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"batchId\": {\"type\": \"string\"},\n              \"material\": {\"type\": \"string\"},\n              \"quantity\": {\"type\": \"number\"},\n              \"expiryDate\": {\"type\": \"string\"},\n              \"daysUntilExpiry\": {\"type\": \"number\"}\n            }\n          }\n        },\n        \"medium\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"batchId\": {\"type\": \"string\"},\n              \"material\": {\"type\": \"string\"},\n              \"quantity\": {\"type\": \"number\"},\n              \"expiryDate\": {\"type\": \"string\"},\n              \"daysUntilExpiry\": {\"type\": \"number\"}\n            }\n          }\n        }\n      }\n    },\n    \"shortfallAlerts\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"shortfalls\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"materialId\": {\"type\": \"string\"},\n              \"materialName\": {\"type\": \"string\"},\n              \"currentStock\": {\"type\": \"number\"},\n              \"weeklyDemand\": {\"type\": \"number\"},\n              \"weeksUntilStockout\": {\"type\": \"number\"},\n              \"shortfall\": {\"type\": \"number\"}\n            }\n          }\n        },\n        \"warnings\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"materialId\": {\"type\": \"string\"},\n              \"materialName\": {\"type\": \"string\"},\n              \"currentStock\": {\"type\": \"number\"},\n              \"weeklyDemand\": {\"type\": \"number\"},\n              \"weeksUntilStockout\": {\"type\": \"number\"},\n              \"shortfall\": {\"type\": \"number\"}\n            }\n          }\n        }\n      }\n    },\n    \"summary\": {\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\"alertType\", \"timestamp\", \"summary\"]\n}"
+      },
+      "id": "a198fd60-de90-4bed-8ac6-59a19204c807",
+      "name": "JSON Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        2112,
+        1024
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1984,
+        1024
+      ],
+      "id": "da56c628-9e68-4351-b1cf-6e1aa3052792",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "76ety9IPdU8Qvj7a",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM allocated_materials_to_orders",
+        "options": {}
+      },
+      "id": "e0839b7f-1d44-4e52-a772-f0c0b6befea4",
+      "name": "Query Allocated Materials",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1744,
+        608
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "QPfZlQMKTdJ630Xt",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM available_inventory_report",
+        "options": {}
+      },
+      "id": "bb82878b-8494-4ba8-9932-70bc9f8bd7c4",
+      "name": "Query Available Inventory",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1744,
+        800
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "QPfZlQMKTdJ630Xt",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM enrollment_rate_report",
+        "options": {}
+      },
+      "id": "700f31c2-8625-4cd7-9c50-727d558c9a77",
+      "name": "Query Enrollment Rate Report",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1744,
+        992
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "QPfZlQMKTdJ630Xt",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const alertData = $input.first().json;\nconst emailRecipient = $('Workflow Configuration').first().json.emailRecipient;\n\n// Format the alert as an email-ready payload\nconst emailPayload = {\n  to: emailRecipient,\n  subject: `Supply Chain Alert: ${alertData.alertType.replace('_', ' ').toUpperCase()}`,\n  body: {\n    alertType: alertData.alertType,\n    timestamp: alertData.timestamp,\n    summary: alertData.summary,\n    expiryAlerts: alertData.expiryAlerts || {},\n    shortfallAlerts: alertData.shortfallAlerts || {}\n  },\n  json: alertData\n};\n\nreturn emailPayload;"
+      },
+      "id": "30321ffb-fe46-45d4-a405-609477d46434",
+      "name": "Format Alert for Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ JSON.stringify($json.body, null, 2) }}",
+        "options": {}
+      },
+      "id": "22d7cd97-1ab2-4bef-8437-0154d7651a69",
+      "name": "Send Alert Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2544,
+        800
+      ],
+      "webhookId": "aaa9acbf-51d5-4635-8996-b3cdb61cead9",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "iaNbV2DdUlqLgRVv",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily Schedule": {
+      "main": [
+        [
+          {
+            "node": "Workflow Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Configuration": {
+      "main": [
+        [
+          {
+            "node": "Query Allocated Materials",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Available Inventory",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Enrollment Rate Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JSON Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Supply Watchdog Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supply Watchdog Agent": {
+      "main": [
+        [
+          {
+            "node": "Format Alert for Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Supply Watchdog Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Allocated Materials": {
+      "main": [
+        [
+          {
+            "node": "Supply Watchdog Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Available Inventory": {
+      "main": [
+        [
+          {
+            "node": "Supply Watchdog Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Enrollment Rate Report": {
+      "main": [
+        [
+          {
+            "node": "Supply Watchdog Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert for Email": {
+      "main": [
+        [
+          {
+            "node": "Send Alert Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "b67fa7c2-0a87-4a01-86f8-67495d00a50c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "9a136921e4836875115aabb897476f42d836138ab95e78d2b291ad4cb92fe794"
+  },
+  "id": "UntcRTkCHLjX9bMI",
+  "tags": []
+}

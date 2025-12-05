@@ -4,6 +4,6 @@
 # Ignore clinical data folder and any zip files
 synthetic_clinical_data/
 *.zip
-
+env/
 # Ignore assignment markdown
 Take Home Assignment.md
