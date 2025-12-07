@@ -1,209 +1,268 @@
-import datetime
-import json
-import psycopg2
-import os # To retrieve the API key securely
-from psycopg2 import extras
-import google.generativeai as genai
-import re
+"""
+strategist_agent_py314.py
+Python 3.14 compatible: LangChain 0.2+ (Pydantic v2) + LangGraph 1.x
+- Three tools: technical, regulatory, logistics (call DB)
+- LLM: Google Gemini (via langchain_google_genai) — replace with OpenAI if needed
+- Final structured output produced via LangChain's structured output support
+"""
 
-# Import the function to load environment variables
+import os
+import json
+import decimal
+import psycopg2
+from psycopg2 import extras
+from typing import TypedDict, Literal
 from dotenv import load_dotenv
 
-# --- CONFIGURATION ---
-# Load environment variables from the .env file
-load_dotenv() 
+# Pydantic v2 (Python 3.14 compatible)
+from pydantic import BaseModel, Field
 
-# Retrieve configuration from environment variables
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
+# LangChain 0.2+ imports (structured outputs + tools)
+from langchain.tools import tool
+from langchain_core.output_parsers import PydanticOutputParser
+
+
+# Change import path depending on which provider integration you use.
+# Here we use Google GenAI integration; if you prefer OpenAI, swap appropriately.
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAI
+
+# LangGraph (1.x) imports — graph-based workflow
+from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.memory import MemorySaver
+
+# ---------------------------------------------------------------------
+# 1) CONFIG
+# ---------------------------------------------------------------------
+load_dotenv()
 
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST"),
-    "database": os.getenv("DB_DATABASE"), 
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "port": os.getenv("DB_PORT")
+    "host": os.getenv("DB_HOST", "localhost"),
+    "database": os.getenv("DB_DATABASE", "postgres"),
+    "user": os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD", ""),
+    "port": int(os.getenv("DB_PORT", 5432))
 }
-gemini_model = None
-try:
-    genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-2.5-flash')
-except Exception as e:
-    print(f"Error initializing Gemini model: {e}. Please ensure GEMINI_API_KEY is correct.")
 
-
-# --- 2. AGENT TOOLS ---
-
-def run_sql_query(query: str, db_config: dict):
-    """
-    TOOL: Connects to PostgreSQL, executes the query, and returns results as JSON string or an error message.
-    """
-    import decimal
-    def convert_decimal(obj):
-        if isinstance(obj, list):
-            return [convert_decimal(i) for i in obj]
-        elif isinstance(obj, dict):
-            return {k: convert_decimal(v) for k, v in obj.items()}
-        elif isinstance(obj, decimal.Decimal):
+# ---------------------------------------------------------------------
+# 2) DB helper (converts decimals -> floats for JSON)
+# ---------------------------------------------------------------------
+def run_sql_query(query: str) -> str:
+    def _conv(obj):
+        if isinstance(obj, decimal.Decimal):
             return float(obj)
-        else:
-            return obj
+        return obj
 
     conn = None
     try:
-        conn = psycopg2.connect(**db_config)
+        conn = psycopg2.connect(**DB_CONFIG)
         with conn.cursor(cursor_factory=extras.DictCursor) as cur:
             cur.execute(query)
-            results = [dict(row) for row in cur.fetchall()]
-            results = convert_decimal(results)
-            return json.dumps(results), None
-    except psycopg2.Error as e:
-        return None, str(e)
+            if cur.description:
+                rows = [dict(r) for r in cur.fetchall()]
+                return json.dumps(rows, default=_conv)
+            else:
+                conn.commit()
+                return json.dumps({"status": "success", "message": "OK"})
+    except Exception as e:
+        # Return structured error as JSON string (tools must return str)
+        return json.dumps({"status": "error", "message": str(e)})
     finally:
         if conn:
             conn.close()
 
-def generate_strategic_response(prompt_history: list, model_name: str = 'gemini-2.5-flash') -> str:
+# ---------------------------------------------------------------------
+# 3) Tools — decorated with LangChain's @tool (structured-tool friendly)
+# ---------------------------------------------------------------------
+@tool
+def check_technical_constraints(query: str) -> str:
+    """Run user-supplied SQL (or a generated SQL) against 're-evaluation' table."""
+    return run_sql_query(query)
+
+@tool
+def check_regulatory_approval(query: str) -> str:
+    """Check regulatory tables (rim / material_country_requirements)."""
+    return run_sql_query(query)
+
+@tool
+def check_logistics_timeline(query: str) -> str:
+    """Check ip_shipping_timelines_report or shipping timelines."""
+    return run_sql_query(query)
+
+TOOLS = [check_technical_constraints, check_regulatory_approval, check_logistics_timeline]
+
+# ---------------------------------------------------------------------
+# 4) Structured output schema (Pydantic v2)
+# ---------------------------------------------------------------------
+class StrategistDecision(BaseModel):
+    decision: Literal["YES", "NO"] = Field(..., description="Final feasibility decision.")
+    reasoning: str = Field(..., description="Detailed explanation citing data from tools.")
+    technical_check: str = Field(..., description="Summary of technical check outputs.")
+    regulatory_check: str = Field(..., description="Summary of regulatory check outputs.")
+    logistical_check: str = Field(..., description="Summary of logistics check outputs.")
+
+# Parser / format instructions for prompt injection into model
+pydantic_parser = PydanticOutputParser(pydantic_object=StrategistDecision)
+FORMAT_INSTRUCTIONS = pydantic_parser.get_format_instructions()
+
+# ---------------------------------------------------------------------
+# 5) LLM initialization (Google Gemini example)
+# # ---------------------------------------------------------------------
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    temperature=0,
+    api_key=os.getenv("GEMINI_API_KEY")
+)
+
+# from langchain_groq import ChatGroq
+
+# llm = ChatGroq(
+#     model="openai/gpt-oss-120b",   # fastest, excellent reasoning
+#     temperature=0.0,
+#     api_key=os.getenv("GROQ_API_KEY")
+# )
+
+# Optionally bind tools if using LangChain agent tooling. In many modern flows,
+# tools are surfaced to the model via the graph/tool-node and not via bind_tools.
+# We'll keep tools in Graph as ToolNode; the LLM will produce tool-calls naturally.
+# If your model integration supports .bind_tools(), you can call it:
+# llm_with_tools = llm.bind_tools(TOOLS)   # if available
+
+# ---------------------------------------------------------------------
+# 6) Agent state type
+# ---------------------------------------------------------------------
+class AgentState(TypedDict):
+    # messages is a list of dict-like message objects expected by the LLM integration
+    messages: list
+
+# ---------------------------------------------------------------------
+# 7) Node implementations (for LangGraph)
+# ---------------------------------------------------------------------
+def strategist_node(state: AgentState):
     """
-    TOOL: Calls the Gemini LLM to generate the next action (SQL or FINAL_ANSWER).
+    The strategist node: ask the LLM to analyze the user query and decide which tools to call.
+    We'll ask the LLM to return either:
+      - a "TOOL_CALL" action describing which tool to call and with what SQL
+      - or a final_answer if it can produce one without tools (we still require 3 tools by rule)
+    The graph's tools_condition() helper will route to the ToolNode automatically.
     """
-    if not gemini_model:
-        raise ConnectionError("Gemini model not initialized.")
+    # Build a clear prompt that contains format instructions for tool-calls.
+    messages = state["messages"]
+    # Append the structured-output formatting instructions to the message so the model
+    # knows how to produce the final JSON later.
+    prompt_text = (
+        "You are a Shelf-Life Extension Feasibility Advisor.\n\n"
+        "You MUST call these three tools, in any order:\n"
+        "1) check_technical_constraints(sql)\n"
+        "2) check_regulatory_approval(sql)\n"
+        "3) check_logistics_timeline(sql)\n\n"
+        "For every tool call produce a short explanation. After calling ALL three tools, return "
+        "a final JSON matching the schema described by the format instructions below.\n\n"
+        "FORMAT INSTRUCTIONS:\n" + FORMAT_INSTRUCTIONS + "\n\n"
+        "When you want to call a tool, respond with a single JSON object describing the action:\n"
+        '{"action":"tool_call","tool":"<tool_name>","input":"<sql or input string>","note":"<why>"}\n\n'
+        "If you have no more tools to call and are ready to finalize, produce the final object per the format.\n\n"
+        "IMPORTANT RULES:"
+"- ALWAYS return complete JSON."
+"- NEVER break JSON across lines."
+"- NEVER output partial SQL."
+"- NEVER output trailing commas."
+"- ALWAYS close all braces } and quotes "
+"If JSON is not valid, you MUST regenerate valid JSON."
+)
+        
+    # Build model input — integration-specific shape; using a simple text prompt structure.
+    model_input = messages + [{"role": "user", "content": prompt_text}]
+    # Use the llm to generate text. The exact method name may differ across providers;
+    # modern LangChain ChatModels accept a simple 'generate' or 'invoke' style. We'll use .invoke() in this example.
+    result = llm.invoke(model_input)  # provider-specific; raises if method missing
+    return {"messages": [result]}
+
+def formatter_node(state: AgentState):
+    """
+    After tools have been called and their outputs placed into state.messages,
+    ask the model to produce a final Pydantic-validated JSON using PydanticOutputParser.
+    """
+    messages = state["messages"]
+    # Ask model to generate final structured JSON. Provide the parser's instructions.
+    final_prompt = [
+        {"role": "user", "content": "Using the data above, produce the final decision JSON."},
+        {"role": "user", "content": FORMAT_INSTRUCTIONS}
+    ]
+    model_input = messages + final_prompt
+    final_resp = llm.invoke(model_input)
+    # Attempt to parse model output into the pydantic model
     try:
-        # Concatenate prompt history as a single string
-        prompt = "\n\n".join(prompt_history)
-        response = gemini_model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0.0
-            }
-        )
-        return response.text.strip()
+        parsed = pydantic_parser.parse(final_resp.content)  # returns StrategistDecision
+        # Convert to JSON string to keep message objects consistent
+        return {"messages": [{"role": "assistant", "content": parsed.model_dump_json()}]}
     except Exception as e:
-        raise Exception(f"LLM Generation Error: {e}")
+        # If parsing fails, return raw content but mark as error
+        return {"messages": [{"role": "assistant", "content": json.dumps({"status": "parse_error", "raw": str(final_resp.content), "error": str(e)})}]}
 
+# ---------------------------------------------------------------------
+# 8) Build LangGraph workflow
+# ---------------------------------------------------------------------
+builder = StateGraph(AgentState)
 
-# --- 3. DYNAMIC PROMPT & ORCHESTRATOR LOGIC ---
+# Add nodes: strategist -> tools -> strategist (loop) -> formatter -> END
+builder.add_node("strategist", strategist_node)
+builder.add_node("tools", ToolNode(TOOLS))        # ToolNode will surface our @tool-decorated functions
+builder.add_node("formatter", formatter_node)
 
-def get_strategist_system_prompt() -> str:
-    """Defines the LLM's persona, logic, and required structured output format."""
-    return """
-You are the Scenario Strategist, an expert consultant analyzing the feasibility of shelf-life extension requests. Your output must ALWAYS be a single, structured block defining the NEXT action.
+# Start the flow
+builder.add_edge(START, "strategist")
 
-**REQUIRED OUTPUT FORMAT:**
-If you need to query the database:
-<ACTION>SQL_QUERY</ACTION>
-<QUERY>SELECT ... FROM ...</QUERY>
+# Use the helper that inspects the strategist output to determine whether tools should be called.
+# tools_condition is a supplied helper that inspects model messages for tool_call actions.
+builder.add_conditional_edges(
+    "strategist",
+    tools_condition,
+    {"tools": "tools", "__end__": "formatter"}
+)
 
-You must perform each of the three checks (Technical, Logistical, Regulatory) exactly once. After each check, append the result (or error) to your reasoning. Do not repeat or rephrase queries for the same check. After all three checks, always return:
-<ACTION>FINAL_ANSWER</ACTION>
-<RESPONSE>Your final conversational answer, citing the result of each check. If a query fails, report the error and proceed to the next check. Never generate more than one query per check. Never exceed three queries before FINAL_ANSWER.
+# After tools run, go back to strategist to continue reasoning (typical ReAct loop)
+builder.add_edge("tools", "strategist")
 
-**CONSTRAINTS TO CHECK (CHECK ALL, REPORT ALL):**
-1. **TECHNICAL:** Check batch_master for the "Expiration date_shelf life" and if an "Expiry Extension Date" already exists.
-2. **LOGISTICAL:** Calculate the AVG lead time (actual_delivery_date - order_date) for the material's trial and compare it to the remaining shelf life.
-3. **REGULATORY:** Verify the trial/material is active in the requested country by searching available_inventory_report.
+# Final formatting -> END
+builder.add_edge("formatter", END)
 
-If a SQL query fails, DO NOT try a different SQL for the same check. 
-No EXTRACT needed in query.
-Record the failure and proceed to the next check immediately.
-Repeat checks is strictly forbidden.
-Never generate more than 3 queries: 
-1 Technical, 1 Logistical, 1 Regulatory.
+# Memory / checkpointing (optional)
+memory = MemorySaver()
+agent_graph = builder.compile(checkpointer=memory)
 
-## SCHEMA ABSTRACTION:
-| Business Concept | Required Table | Key Columns |
-| :--- | :--- | :--- |
-| Batch Details | `batch_master` | "Batch number", "Expiration date_shelf life", "Expiry Extension Date" |
-| Shipping Time | `distribution_order_report` | `trial_alias`, `order_date`, `actual_delivery_date` |
-| Trial/Country Link | `available_inventory_report` | "Trial Name", "Location" |
-| Material Link | `allocated_materials_to_orders` | `material_component_batch`, `trial_alias`, `trial_alias_description` |
-Linkage: material_trial_link_view (L) | batch_number, trial_alias, country_name
-START THE PROCESS by generating the query for the Technical Check.
+# ---------------------------------------------------------------------
+# 9) Runner (example)
+# ---------------------------------------------------------------------
+SYSTEM_PROMPT = """
+You are an assistant that MUST check three constraints (technical, regulatory, logistical)
+by calling the corresponding tools. Always call all three tools before finalizing.
 """
 
-def parse_llm_action(llm_output: str) -> tuple:
-    """Parses the LLM's structured output into an action and content."""
-    action_match = re.search(r'<action>(.*?)</action>', llm_output, re.IGNORECASE | re.DOTALL)
-    content_match = re.search(r'<(query|response)>(.*?)</(query|response)>', llm_output, re.IGNORECASE | re.DOTALL)
+def run_agent(user_query: str):
+    initial_state = {
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_query}
+        ]
+    }
 
-    action = action_match.group(1).strip() if action_match else 'ERROR'
-    content = content_match.group(2).strip() if content_match else ''
-    
-    return action, content
+    config = {"configurable": {"thread_id": "session_1"}}
+    for event in agent_graph.stream(initial_state, config=config):
+        for node_name, payload in event.items():
+            print(f"\n--- Node: {node_name} ---")
+            if "messages" in payload:
+                last = payload["messages"][-1]
+                # We assume message is provider object or dict-like
+                if isinstance(last, dict):
+                    print("Message (dict):", last.get("content") if last.get("content") else last)
+                else:
+                    # fallback: try to print `.content`
+                    content = getattr(last, "content", str(last))
+                    print("Message:", str(content))
 
-def scenario_strategist_agent(user_query: str, db_config: dict, max_steps: int = 5):
-    """
-    Main orchestrator managing the conversational chain of reasoning with the LLM.
-    """
-    prompt_history = [
-        get_strategist_system_prompt(),
-        f"User Request: {user_query}"
-    ]
-    
-    print(f"--- STRATEGIST AGENT INITIATED ---")
-    print(f"User Query: {user_query}")
-    
-    for step in range(max_steps):
-        print(f"\n--- STEP {step + 1}/{max_steps} ---")
-        
-        # 1. LLM Generates Next Action (Query or Answer)
-        try:
-            llm_output = generate_strategic_response(prompt_history)
-        except Exception as e:
-            return {"status": "Failure", "message": f"LLM generation failed: {e}"}
-
-        # 2. Parse Action
-        action, content = parse_llm_action(llm_output)
-        
-        # Add LLM's full output to history for context
-        prompt_history = [
-    get_strategist_system_prompt(),   # ← REINFORCE SYSTEM PROMPT EACH TURN
-    f"User Request: {user_query}",
-    f"Model Response: {llm_output}",
-]
-
-        
-        if action == 'SQL_QUERY':
-            print(f"Action: Generating and Executing SQL...")
-            print(f"Query: {content}")
-            
-            # 3. Execute Tool Call
-            db_results_json, db_error = run_sql_query(content, db_config)
-            
-            # 4. Feedback Loop
-            if db_error:
-                feedback = (
-                    f"!!! SQL EXECUTION FAILED !!!\n"
-                    f"The PostgreSQL error was: {db_error}\n"
-                    f"ANALYZE THE ERROR AND GENERATE A CORRECTED SQL QUERY OR DECLARE FINAL_ANSWER IF BLOCKED."
-                )
-            else:
-                feedback = (
-                    f"Query Executed Successfully.\n"
-                    f"DATABASE RESULT (JSON):\n{db_results_json}\n"
-                    f"ANALYZE THE RESULT AND GENERATE THE NEXT SEQUENTIAL QUERY (LOGISTICAL or REGULATORY CHECK) OR DECLARE FINAL_ANSWER."
-                )
-            
-            # Add tool output/feedback to history for the next turn
-            prompt_history.append(f"<TOOL_RESPONSE>{feedback}</TOOL_RESPONSE>")
-        
-        elif action == 'FINAL_ANSWER':
-            print("Action: Final Answer Ready.")
-            return {"status": "Success", "response": content}
-        
-        else:
-            print(f"Error: Unknown action '{action}' or parsing failed. Stopping.")
-            return {"status": "Failure", "message": f"LLM output could not be parsed: {llm_output}"}
-
-    return {"status": "Failure", "message": "Max execution steps reached without a final answer."}
-
-# --- 5. EXECUTION EXAMPLE ---
-
-# Example User Query
-user_request = "Can we extend the expiry of Batch LOT-14364098 for the Taiwan trial? I need a clear YES or NO."
-
-# Run the agent (requires valid API key and DB connection)
-final_report = scenario_strategist_agent(user_request, DB_CONFIG)
-
-print("\n---SCENARIO STRATEGIST REPORT ---")
-print(json.dumps(final_report, indent=2))
+if __name__ == "__main__":
+    user_q = "Can we extend Batch LOT-123 for Germany? Provide SQL for checks and decide."
+    run_agent(user_q)

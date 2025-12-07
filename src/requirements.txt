@@ -1,3 +1,21 @@
-psycopg2
-google-generativeai
-python-dotenv
+# psycopg2
+# google-generativeai
+# python-dotenv
+
+# Core
+langchain>=0.2.12
+langchain-core>=0.2.12
+langgraph>=1.0.0
+
+# Pydantic v2 for Python 3.14
+pydantic>=2.7,<3.0
+
+# Provider + integrations (Google GenAI example)
+langchain-google-genai>=0.1.0  # or langchain_google_genai package name depending on pip package
+langchain-google-genai-chat_models>=0.1.0  # (if integration split) -- adapt to installed package
+
+# Utilities
+python-dotenv>=1.0.0
+psycopg2-binary>=2.9.9
+tqdm>=4.66.0
+typing_extensions>=4.10.0

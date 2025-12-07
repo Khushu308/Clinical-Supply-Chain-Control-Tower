@@ -1,149 +1,261 @@
-# Import the function to load environment variables
+import os
+import json
+import datetime
+import psycopg2
+from psycopg2 import extras
+from typing import TypedDict, Annotated, List, Union, Literal
 from dotenv import load_dotenv
 
-# --- CONFIGURATION ---
-# Load environment variables from the .env file
-load_dotenv() 
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
 
-# Retrieve configuration from environment variables
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
+# --- 1. CONFIGURATION ---
+load_dotenv()
 
+# Database Config
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
-    "database": os.getenv("DB_DATABASE"), 
+    "database": os.getenv("DB_DATABASE"),
     "user": os.getenv("DB_USER"),
     "password": os.getenv("DB_PASSWORD"),
     "port": os.getenv("DB_PORT")
 }
 
-import datetime
-import json
-import psycopg2
-import os # To retrieve the API key securely
-from psycopg2 import extras
-import google.generativeai as genai
+# --- 2. STATE DEFINITION ---
+class AgentState(TypedDict):
+    """The state of the watchdog agent loop."""
+    messages: List[BaseMessage]
+    retry_count: int
+    max_retries: int
+    # Consolidated results for final report
+    final_report: dict
+    # Current operation context
+    current_operation: Literal["EXPIRY_ALERT", "SHORTFALL_PREDICTION"]
+    # Temporary fields for query execution
+    query_result: Union[List[dict], None]
+    error: Union[str, None]
 
-import re
-# --- CONFIGURATION ---
-gemini_model = None
-try:
-    genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-2.5-flash')
-except Exception as e:
-    print(f"Error initializing Gemini model: {e}. Please ensure GEMINI_API_KEY is correct.")
+# --- 3. HELPER FUNCTION ---
+def run_sql_query_safe(query: str) -> tuple[List[dict] | None, str | None]:
+    """Helper to execute SQL queries safely, returns (results, error)."""
+    def convert_decimal(obj):
+        # Convert Decimals to float for JSON serialization
+        if isinstance(obj, decimal.Decimal):
+            return float(obj)
+        return obj
 
-# --- 2. AGENT TOOLS ---
-
-def run_sql_query(query: str, db_config: dict):
-    """
-    TOOL: Connects to PostgreSQL, executes the query, and returns results or an error message.
-    """
     conn = None
-    
     try:
-        conn = psycopg2.connect(**db_config)
+        conn = psycopg2.connect(**DB_CONFIG)
         with conn.cursor(cursor_factory=extras.DictCursor) as cur:
             cur.execute(query)
-            # Fetch column names for context if needed, but primarily fetch data
-            results = cur.fetchall()
-            return [dict(row) for row in results], None # Data, No Error
-            
-    except psycopg2.Error as e:
-        # Capture the specific PostgreSQL error message for the LLM to analyze
-        return None, str(e) # No Data, Error Message
-        
+            if cur.description:
+                results = [dict(row) for row in cur.fetchall()]
+                # Ensure conversion
+                clean_results = json.loads(json.dumps(results, default=convert_decimal))
+                return clean_results, None
+            else:
+                conn.commit()
+                return [], None
+    except Exception as e:
+        return None, str(e)
     finally:
         if conn:
             conn.close()
 
-def generate_sql_with_gemini(full_prompt: str, model_name: str = 'gemini-2.5-flash') -> str:
-    """
-    TOOL: Calls the Gemini LLM to generate the SQL query string.
-    """
-    if not gemini_model:
-        raise ConnectionError("Gemini client not initialized due to missing API key or connection error.")
-        
-    try:
-        response = gemini_model.generate_content(
-            full_prompt,
-            generation_config={
-                "temperature": 0.1
-            }
-        )
-        sql_query = response.text.strip().replace('```sql', '').replace('```', '').strip()
-        return sql_query
-    except Exception as e:
-        raise Exception(f"LLM Generation Error: {e}")
+# --- 4. GRAPH NODES ---
 
-# --- 3. THE SELF-HEALING ORCHESTRATOR ---
 
-def execute_with_retry(system_prompt: str, db_config: dict, max_retries: int = 3):
-    """
-    Implements the self-healing loop: LLM generates SQL -> Python executes -> 
-    If SQL fails, Python feeds error back to LLM -> LLM corrects -> Retry.
-    """
-    current_prompt = system_prompt
-    
-    for attempt in range(max_retries):
-        print(f"\n--- ATTEMPT {attempt + 1}/{max_retries}: Generating SQL ---")
-        
+import time
+
+def safe_llm_invoke(llm, messages):
+    retry_count = 0
+    while retry_count < 5:
         try:
-            # 1. LLM Generates SQL
-            sql_query = generate_sql_with_gemini(current_prompt)
-            print(f"Generated Query:\n{sql_query}")
-            
-            # 2. Python Executes SQL
-            results, error = run_sql_query(sql_query, db_config)
-            
-            if error is None:
-                print("SQL Executed successfully.")
-                return results # Success!
-            
-            # 3. SQL Failed - Prepare for Repair
-            print(f"Execution failed with error: {error}")
-            
-            # 4. Agentic Repair Step: Update prompt with error context
-            current_prompt += (
-                f"\n\n!!! PREVIOUS ATTEMPT FAILED !!!\n"
-                f"The generated SQL failed with the following PostgreSQL error:\n"
-                f"{error}\n"
-                f"The faulty query was:\n"
-                f"{sql_query}\n"
-                f"ANALYZE THE ERROR AND GENERATE A CORRECTED, COMPLETE SQL QUERY."
-            )
-        
+            return llm.invoke(messages)
         except Exception as e:
-            print(f"A critical error occurred during generation or execution: {e}")
-            break
+            if "quota" in str(e).lower() or "429" in str(e):
+                wait = 30  # wait seconds
+                print(f"Quota exceeded. Waiting {wait}s before retrying...")
+                time.sleep(wait)
+                retry_count += 1
+            else:
+                raise
+    raise RuntimeError("Failed to invoke LLM after retries due to quota limits.")
 
-    # If loop completes without success
-    print("Failed to generate and execute a valid SQL query after all retries.")
-    return None
 
-# --- 4. THE MAIN AGENT WORKFLOW (Integrating the components) ---
-
-def supply_watchdog_shortfall_workflow():
-    """
-    Prepares dynamic context and initiates the LLM-driven Shortfall Prediction.
-    """
-    if not gemini_model:
-        return {"status": "error", "message": "Cannot run agent without Gemini model connection."}
-
-    # --- A. Dynamic Context Generation (Python's Job) ---
-    today = datetime.date.today() 
-    weeks_threshold = 8 
-    # Logic to dynamically determine demand columns (e.g., last 3 completed months)
-    demand_cols = ['Sep', 'Oct', 'Nov'] # Example dynamic columns
+# 4.1. Node: Generate SQL Query
+def generate_query_node(state: AgentState):
+    """LLM node to generate the SQL query based on the current context."""
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        temperature=0.1,
+        api_key=os.getenv("GEMINI_API_KEY")
+    )
     
-    # --- B. System Prompt Construction (Python's Job) ---
-    system_prompt = f"""
-You are the Supply Watchdog, an autonomous, analytical AI agent. Your task is to perform daily inventory risk assessments and generate precise, executable PostgreSQL queries.
-**CONTEXT:** Today is {today.isoformat()}. The lookback window for demand is the average of the last 3 months: **{demand_cols}**.
-The alert threshold is stock running out in **{weeks_threshold} weeks** or less.
-Your ONLY output must be the complete PostgreSQL SQL query. DO NOT include any explanatory text, markdown formatting (like ```sql`), or surrounding code.
+    # Invoke LLM with the current messages
+    # response = llm.invoke(state["messages"])
+    response = safe_llm_invoke(llm, state["messages"])
+
+
+    # Convert the LLM output to an AIMessage
+    ai_msg = AIMessage(content=response.text if hasattr(response, "text") else str(response))
+    
+    # Append to existing messages
+    return {"messages": state["messages"] + [ai_msg]}
+
+
+# 4.2. Node: Execute SQL Query
+def execute_query_node(state: AgentState):
+    """Executes the generated SQL query."""
+    last_message = state["messages"][-1]
+    sql_query = last_message.content.replace('```sql', '').replace('```', '').strip()
+    
+    results, error_msg = run_sql_query_safe(sql_query)
+    
+    if error_msg:
+        # Failure: capture error and increment retry count
+        return {
+            "error": error_msg,
+            "retry_count": state["retry_count"] + 1,
+            "query_result": None
+        }
+    else:
+        # Success: store results
+        return {
+            "query_result": results, 
+            "error": None
+        }
+
+# 4.3. Node: Prepare Retry Message
+def prepare_retry_message(state: AgentState):
+    """Creates the feedback message for the LLM upon failure."""
+    error_msg = state["error"]
+    last_query = state["messages"][-1].content
+    
+    feedback = (
+        f"!!! PREVIOUS ATTEMPT FAILED (Attempt {state['retry_count']})!!!\n"
+        f"The generated SQL failed with the following PostgreSQL error:\n"
+        f"{error_msg}\n"
+        f"The faulty query was:\n"
+        f"```sql\n{last_query}\n```\n"
+        f"ANALYZE THE ERROR and the full SYSTEM PROMPT. **GENERATE A CORRECTED, COMPLETE SQL QUERY.**"
+    )
+    # Append retry message to history
+    return {"messages": [HumanMessage(content=feedback)]}
+
+# 4.4. Node: Process Results & Prepare Next Step (Core Logic)
+def process_results_and_advance(state: AgentState):
+    """
+    Saves the results of the current operation and transitions to the next operation or END.
+    """
+    operation = state["current_operation"]
+    results = state["query_result"]
+    report = state["final_report"]
+    
+    # if operation == "EXPIRY_ALERT":
+    #     # Save Expiry Alert results
+    #     report["expiry_alerts"] = results or []
+        
+    #     # Prepare for Shortfall Prediction stage
+    #     new_system_prompt = generate_system_prompt("SHORTFALL_PREDICTION")
+        
+    #     return {
+    #         "final_report": report,
+    #         "current_operation": "SHORTFALL_PREDICTION",
+    #         "retry_count": 0, # Reset retries for the new operation
+    #         "messages": [
+    #             SystemMessage(content=new_system_prompt),
+    #             # FIX: Add a HumanMessage to trigger the next stage's SQL generation
+    #             HumanMessage(content="The first stage is complete. Generate the SQL query for the SHORTFALL PREDICTION now, strictly following the new System Prompt and Schema.")
+    #         ], 
+    #     }
+    if operation == "EXPIRY_ALERT":
+        # ...
+        new_system_prompt = generate_system_prompt("SHORTFALL_PREDICTION")
+        
+        return {
+            # ...
+            "messages": [
+                SystemMessage(content=new_system_prompt),
+                # ⬅️ CRITICAL FIX HERE: Add HumanMessage for the new stage
+                HumanMessage(content="The first stage is complete. Generate the SQL query for the SHORTFALL PREDICTION now, strictly following the new System Prompt and Schema.")
+            ], 
+        }
+        
+    elif operation == "SHORTFALL_PREDICTION":
+        # Save Shortfall Prediction results
+        report["shortfall_predictions"] = results or []
+        # End the process
+        return {
+            "final_report": report,
+        }
+
+# --- 5. CONDITIONAL EDGES ---
+
+def check_execution_status(state: AgentState):
+    """Determines if the current query execution succeeded, needs retry, or failed permanently."""
+    if state["query_result"] is not None:
+        # Query succeeded, move to process results and advance
+        return "SUCCESS"
+    
+    if state["retry_count"] >= state["max_retries"]:
+        # Failed permanently, move to process results (and save error)
+        return "MAX_RETRIES_REACHED"
+    
+    # Failed, prepare for retry
+    return "RETRY"
+
+def check_workflow_stage(state: AgentState):
+    """Determines the next major workflow stage."""
+    if state["current_operation"] == "SHORTFALL_PREDICTION":
+        # Last stage complete, move to END
+        return "END"
+    # Otherwise, continue to the next step which is END
+    return "ADVANCE"
+
+
+# --- 6. SYSTEM PROMPT GENERATOR (Combines Expiry & Shortfall) ---
+
+def generate_system_prompt(stage: Literal["EXPIRY_ALERT", "SHORTFALL_PREDICTION"]) -> str:
+    """Generates the context-specific prompt for the LLM."""
+    today = datetime.date.today()
+    
+    if stage == "EXPIRY_ALERT":
+        # Logic from the 'Query Expiry Risks' node
+        expiry_threshold_days = 60
+        return f"""
+You are the Supply Watchdog, responsible for generating precise PostgreSQL queries.
+**CONTEXT:** Today is {today.isoformat()}.
+Your current task is **EXPIRY ALERT**: Identify all inventory items that will expire within the next {expiry_threshold_days} days.
+Your ONLY output must be the complete PostgreSQL SQL query. DO NOT include any explanatory text, markdown formatting (like ```sql), or surrounding code.
 
 ## SCHEMA ABSTRACTION
-You must join these tables (using the AS aliases provided) to solve the Shortfall Prediction:
+Table: `available_inventory_report` (S)
+Key Columns: `"Trial Name"`, `"Material Number"`, `"Batch/Lot Number"`, `"Expiry Date"`, `"Received Packages"`, `"Shipped Packages"`.
+
+## CALCULATION LOGIC:
+1. Days Until Expiry: `DATE("Expiry Date") - DATE('{today.isoformat()}')`
+2. Total Inventory: `SUM("Received Packages" - "Shipped Packages")`
+
+## FINAL INSTRUCTION:
+Generate a single, complete PostgreSQL query that returns the `"Trial Name"`, `"Batch/Lot Number"`, `"Expiry Date"`, and Days Until Expiry for all lots where Days Until Expiry is less than or equal to {expiry_threshold_days} AND Total Inventory is greater than 0.
+"""
+
+    elif stage == "SHORTFALL_PREDICTION":
+        # Logic from the original code (Shortfall Prediction)
+        weeks_threshold = 8
+        demand_cols = ['Sep', 'Oct', 'Nov'] # Example dynamic columns
+        
+        return f"""
+You are the Supply Watchdog.
+**CONTEXT:** Today is {today.isoformat()}. The lookback window for demand is the average of the last 3 months: **{demand_cols}**.
+The alert threshold is stock running out in **{weeks_threshold} weeks** or less.
+Your ONLY output must be the complete PostgreSQL SQL query.
+
+## SCHEMA ABSTRACTION
 | Business Concept | Required Table | Column Names (Use these exact names!) |
 | :--- | :--- | :--- |
 | **Supply** | `available_inventory_report` (S) | `"Trial Name"`, `"Location"`, `"Received Packages"`, `"Shipped Packages"` |
@@ -155,33 +267,110 @@ You must join these tables (using the AS aliases provided) to solve the Shortfal
 2. Monthly Demand: ({' + '.join(f'COALESCE("{c}",0)' for c in demand_cols)}) / {len(demand_cols)}.0
 3. Weeks of Coverage: (Available Stock / NULLIF(Monthly Demand, 0)) * 4
 
-## NOTE
-- Safe Cast each column inside the math expressions to avoid null/empty string issues.
 ## FINAL INSTRUCTION:
 Generate a single, complete PostgreSQL query that identifies all combinations of Trial/Country where 'Weeks of Coverage' is less than {weeks_threshold}. Use CTEs for clarity.
 """
+    return ""
 
-    # --- C. Initiate Self-Healing Execution ---
-    final_results = execute_with_retry(system_prompt, DB_CONFIG)
 
-    # --- D. Final Output Formatting ---
-    if final_results is not None:
-        shortfall_alerts = [r for r in final_results if r.get('weeks_coverage', weeks_threshold + 1) < weeks_threshold]
-        
-        return {
-            "report_date": today.isoformat(),
-            "status": "Success",
-            "shortfall_risks_found": len(shortfall_alerts),
-            "shortfall_predictions": shortfall_alerts
+# --- 7. BUILD THE GRAPH ---
+def build_watchdog_graph():
+    builder = StateGraph(AgentState)
+
+    # Nodes (shared by both operations)
+    builder.add_node("generate_query", generate_query_node)
+    builder.add_node("execute_query", execute_query_node)
+    builder.add_node("prepare_retry", prepare_retry_message)
+    builder.add_node("process_results", process_results_and_advance)
+
+    # 7.1. EXPIRY ALERT FLOW (START -> Execute -> Process)
+    builder.add_edge(START, "generate_query")
+    
+    # Main loop for query execution
+    builder.add_edge("generate_query", "execute_query")
+    builder.add_conditional_edges(
+        "execute_query",
+        check_execution_status,
+        {
+            "SUCCESS": "process_results",
+            "RETRY": "prepare_retry",
+            "MAX_RETRIES_REACHED": "process_results", # Advance with error
         }
-    else:
-        return {
-            "report_date": today.isoformat(),
-            "status": "Failure",
-            "message": "Agent failed to generate a valid SQL query against the database."
-        }
+    )
+    builder.add_edge("prepare_retry", "generate_query")
 
-# Execute the agent and print the final report
-final_report = supply_watchdog_shortfall_workflow()
-print("\n--- FINAL SHORTFALL REPORT ---")
-print(json.dumps(final_report, indent=2))
+    # 7.2. TRANSITION TO SHORTFALL OR END
+    builder.add_conditional_edges(
+        "process_results",
+        check_workflow_stage,
+        {
+            "ADVANCE": "generate_query", # Transition to Shortfall Prediction stage
+            "END": END,
+        }
+    )
+
+    return builder.compile()
+
+# --- 8. EXECUTION ---
+def run_watchdog_agent():
+    """Runs the full two-stage Watchdog agent."""
+    
+    agent_graph = build_watchdog_graph()
+    
+    print(f"--- STARTING WATCHDOG AGENT (Full Workflow) ---")
+    
+    # # Initial state for the Expiry Alert stage
+    # initial_state = {
+    #     "messages": [
+    #         SystemMessage(content=generate_system_prompt("EXPIRY_ALERT")),
+    #         # FIX: Add a HumanMessage to initiate the LLM's response
+    #         HumanMessage(content="Generate the SQL query for the EXPIRY ALERT now, strictly following the System Prompt and Schema.")
+    #     ],
+    #     "retry_count": 0,
+    #     "max_retries": 3,
+    #     "final_report": {"report_date": datetime.date.today().isoformat()},
+    #     "current_operation": "EXPIRY_ALERT",
+    #     "query_result": None,
+    #     "error": None
+    # }
+    # Initial state for the Expiry Alert stage
+    initial_state = {
+        "messages": [
+            SystemMessage(content=generate_system_prompt("EXPIRY_ALERT")),
+            # ⬅️ CRITICAL FIX HERE: Add HumanMessage as the trigger
+            HumanMessage(content="Generate the SQL query for the EXPIRY ALERT now, strictly following the System Prompt and Schema.")
+        ],
+        "retry_count": 0,
+             "max_retries": 3,
+        "final_report": {"report_date": datetime.date.today().isoformat()},
+        "current_operation": "EXPIRY_ALERT",
+        "query_result": None,
+        "error": None
+    }
+    
+    # config = {"configurable": {"thread_id": "watchdog_session"}}
+    
+    # Run the graph and collect the final state
+    final_state = agent_graph.invoke(initial_state)
+
+    final_report = final_state.get("final_report", {})
+    
+    print("\n" + "="*50)
+    print("      WATCHDOG AGENT FINAL REPORT")
+    print("="*50)
+    
+    expiry_alerts = final_report.get("expiry_alerts", [])
+    shortfall_predictions = final_report.get("shortfall_predictions", [])
+    
+    # Summary
+    print(f"Date: {final_report.get('report_date')}")
+    print(f"Expiry Alerts Found: {len(expiry_alerts)}")
+    print(f"Shortfall Risks Found: {len(shortfall_predictions)}")
+    print("="*50)
+    
+    # Full JSON Output
+    print(json.dumps(final_report, indent=2, default=str))
+
+
+if __name__ == "__main__":
+    run_watchdog_agent()
