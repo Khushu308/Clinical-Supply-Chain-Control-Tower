@@ -95,14 +95,10 @@ def generate_query_node(state: AgentState):
         api_key=os.getenv("GEMINI_API_KEY")
     )
     
-    # Invoke LLM with the current messages
     # response = llm.invoke(state["messages"])
     response = safe_llm_invoke(llm, state["messages"])
-
-
     # Convert the LLM output to an AIMessage
     ai_msg = AIMessage(content=response.text if hasattr(response, "text") else str(response))
-    
     # Append to existing messages
     return {"messages": state["messages"] + [ai_msg]}
 
@@ -154,33 +150,14 @@ def process_results_and_advance(state: AgentState):
     operation = state["current_operation"]
     results = state["query_result"]
     report = state["final_report"]
-    
-    # if operation == "EXPIRY_ALERT":
-    #     # Save Expiry Alert results
-    #     report["expiry_alerts"] = results or []
-        
-    #     # Prepare for Shortfall Prediction stage
-    #     new_system_prompt = generate_system_prompt("SHORTFALL_PREDICTION")
-        
-    #     return {
-    #         "final_report": report,
-    #         "current_operation": "SHORTFALL_PREDICTION",
-    #         "retry_count": 0, # Reset retries for the new operation
-    #         "messages": [
-    #             SystemMessage(content=new_system_prompt),
-    #             # FIX: Add a HumanMessage to trigger the next stage's SQL generation
-    #             HumanMessage(content="The first stage is complete. Generate the SQL query for the SHORTFALL PREDICTION now, strictly following the new System Prompt and Schema.")
-    #         ], 
-    #     }
     if operation == "EXPIRY_ALERT":
         # ...
-        new_system_prompt = generate_system_prompt("SHORTFALL_PREDICTION")
+        new_system_prompt = generate_system_prompt("EXPIRY_ALERT")
         
         return {
             # ...
             "messages": [
                 SystemMessage(content=new_system_prompt),
-                # ⬅️ CRITICAL FIX HERE: Add HumanMessage for the new stage
                 HumanMessage(content="The first stage is complete. Generate the SQL query for the SHORTFALL PREDICTION now, strictly following the new System Prompt and Schema.")
             ], 
         }
@@ -188,7 +165,6 @@ def process_results_and_advance(state: AgentState):
     elif operation == "SHORTFALL_PREDICTION":
         # Save Shortfall Prediction results
         report["shortfall_predictions"] = results or []
-        # End the process
         return {
             "final_report": report,
         }
@@ -225,7 +201,7 @@ def generate_system_prompt(stage: Literal["EXPIRY_ALERT", "SHORTFALL_PREDICTION"
     
     if stage == "EXPIRY_ALERT":
         # Logic from the 'Query Expiry Risks' node
-        expiry_threshold_days = 60
+        expiry_threshold_days = 90
         return f"""
 You are the Supply Watchdog, responsible for generating precise PostgreSQL queries.
 **CONTEXT:** Today is {today.isoformat()}.
@@ -318,26 +294,10 @@ def run_watchdog_agent():
     agent_graph = build_watchdog_graph()
     
     print(f"--- STARTING WATCHDOG AGENT (Full Workflow) ---")
-    
-    # # Initial state for the Expiry Alert stage
-    # initial_state = {
-    #     "messages": [
-    #         SystemMessage(content=generate_system_prompt("EXPIRY_ALERT")),
-    #         # FIX: Add a HumanMessage to initiate the LLM's response
-    #         HumanMessage(content="Generate the SQL query for the EXPIRY ALERT now, strictly following the System Prompt and Schema.")
-    #     ],
-    #     "retry_count": 0,
-    #     "max_retries": 3,
-    #     "final_report": {"report_date": datetime.date.today().isoformat()},
-    #     "current_operation": "EXPIRY_ALERT",
-    #     "query_result": None,
-    #     "error": None
-    # }
     # Initial state for the Expiry Alert stage
     initial_state = {
         "messages": [
             SystemMessage(content=generate_system_prompt("EXPIRY_ALERT")),
-            # ⬅️ CRITICAL FIX HERE: Add HumanMessage as the trigger
             HumanMessage(content="Generate the SQL query for the EXPIRY ALERT now, strictly following the System Prompt and Schema.")
         ],
         "retry_count": 0,

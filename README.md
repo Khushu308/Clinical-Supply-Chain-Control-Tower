@@ -1,170 +1,46 @@
-# Clinical Supply Chain Control Tower – Agentic Architecture
+# Problem
 
-## Overview
-This project implements an agentic AI system for automating risk detection and decision support in a clinical supply chain environment. It is designed for Global Pharma Inc. and addresses two major workflows:
+Clinical supply chains are complex, involving multiple data sources, regulatory requirements, and logistical constraints. Manual monitoring and decision-making for batch expiry, shortfall risks, and shelf-life extensions is error-prone, slow, and difficult to scale. Supply managers need reliable, explainable, and automated tools to ensure timely decisions and compliance across global operations.
 
-- **Supply Watchdog**: Autonomous daily monitoring of inventory health, expiry risks, and shortfall prediction.
-- **Scenario Strategist**: Conversational assistant for managers to evaluate shelf-life extension requests and other supply chain queries.
+# Solution
 
-## Features
-- **Automated Expiry Alerts**: Identifies batches at risk of expiry within 90 days and classifies them by criticality.
-- **Shortfall Prediction**: Compares projected demand (from enrollment rates) against current inventory to alert if stock runs out within 8 weeks.
-- **Conversational Query Handling**: Answers ad-hoc queries about batch expiry extension, checking technical, logistical, and regulatory constraints.
-- **Self-Healing SQL Execution**: Agents automatically repair and retry invalid SQL queries using LLM feedback.
-- **Environment Variable Support**: Uses `.env` for secure configuration.
+This project provides an agentic AI-powered control tower for clinical supply chains, integrating Python-based agents and n8n workflow automation. The system automates daily risk detection, expiry alerts, shortfall prediction, and scenario-based decision support. It leverages LLMs for advanced reasoning, explicit column context for robust SQL generation, and modular workflows for extensibility and notification. The result is a unified, transparent, and scalable platform for supply chain decision support, reducing manual effort and improving reliability.
 
-## Folder Structure
-```
-Clinical-Supply-Chain-Control-Tower/
-│   .gitignore
-│   env/                # Python virtual environment
-│   src/
-│       .env            # Environment variables
-│       requirements.txt
-│       strategist_agent.py
-│       watchdog_agent.py
-```
+# Clinical Supply Chain Control Tower – Master Overview
 
-## How It Works
-### 1. Supply Watchdog (`watchdog_agent.py`)
-- Runs daily (can be scheduled via cron or task scheduler).
-- Connects to PostgreSQL, executes expiry and shortfall queries.
-- Outputs a structured JSON payload for email/API alerts.
+## Essence of the Architecture
 
-### 2. Scenario Strategist (`strategist_agent.py`)
-- Accepts user queries (e.g., "Can we extend the expiry of Batch #123 for the German trial?").
-- Uses an LLM (Gemini API) to reason through technical, logistical, and regulatory checks.
-- Returns a clear YES/NO answer with supporting data and reasoning.
+This project delivers an agentic AI-powered solution for clinical supply chain management, integrating two complementary approaches:
 
-## Setup Instructions
-1. **Clone the repository**
-2. **Create and activate a Python virtual environment**
-   ```sh
-   python -m venv env
-   source env/bin/activate  # On Windows: env\Scripts\activate
-   ```
-3. **Install dependencies**
-   ```sh
-   pip install -r src/requirements.txt
-   ```
-4. **Configure environment variables**
-   - Create a `.env` file in `src/` with your database and API keys:
-     ```env
-     GEMINI_API_KEY=your_gemini_api_key
-     DB_HOST=localhost
-     DB_NAME=supplychain
-     DB_USER=n8nuser
-     DB_PASSWORD=n8nuser
-     DB_PORT=5432
-     ```
-5. **Load your clinical data into PostgreSQL**
-   - Use the provided CSVs and schema overview to populate your database.
+### Python Agentic Architecture
+- Scenario Strategist & Supply Watchdog: Python-based agents automate risk detection, expiry alerts, shortfall prediction, and scenario-based decision support.
+- Conversational Decision Support: The Scenario Strategist agent answers ad-hoc queries (e.g., shelf-life extension requests) by checking technical, regulatory, and logistical constraints using direct SQL queries and explicit column context.
+- Self-Healing & Reliable Reasoning: Agents use LLMs (Gemini API) for prompt engineering, error correction, and structured output, ensuring robust and explainable decisions.
+- Data-Driven: All logic is based on querying PostgreSQL tables loaded from clinical CSVs, with clear requirements for a "YES" decision (all checks must pass).
 
-## Usage
-- **Run Supply Watchdog**
-  ```sh
-  python src/watchdog_agent.py
-  ```
-- **Run Scenario Strategist**
-  ```sh
-  python src/strategist_agent.py
-  ```
+### n8n Workflow Automation
+- Visual Workflow Orchestration: n8n workflows automate supply chain monitoring, risk alerts, and scenario analysis using a visual, modular approach.
+- Integration with LLMs & Databases: Workflows connect directly to PostgreSQL for data queries and use Gemini LLM for advanced reasoning and explanations.
+- Extensible & Modular: New agents, logic, and notification channels can be added by updating workflow JSON files and connecting them to the database and LLM nodes.
+- Automated Notifications: Scheduler and email nodes enable periodic risk checks and structured alerts to supply managers.
 
-## Edge Case Handling
-- **Data Ambiguity**: Agents use fuzzy matching and context to resolve naming mismatches (e.g., "Trial ABC" vs "Trial_ABC_v2").
-- **SQL Errors**: Agents detect invalid SQL, provide error feedback to the LLM, and retry with corrected queries.
+## Unified Value Proposition
+- End-to-End Automation: From daily risk monitoring to complex scenario analysis, the system provides a seamless, data-driven, and explainable supply chain control tower.
+- Human-in-the-Loop Decision Support: Managers can interact with agents or workflows to get actionable, transparent recommendations for shelf-life extensions and other supply chain decisions.
+- Robustness & Reliability: Explicit column context, error handling, and modular design ensure the system is resilient to data ambiguity and SQL errors.
+- Scalable & Extensible: Both Python agents and n8n workflows can be extended to cover new data sources, business rules, and notification channels.
 
 ## Technologies Used
 - Python 3.13+
 - PostgreSQL
 - Gemini API (Google Generative AI)
+- n8n Workflow Engine
 - python-dotenv
 - psycopg2
 
-## License
-This project is for demonstration and educational purposes.
-
-# Clinical Supply Chain Control Tower – Agentic Architecture
-
-## Overview
-This project implements an agentic AI system for automating risk detection and decision support in a clinical supply chain environment. It is designed for Global Pharma Inc. and addresses two major workflows:
-
-- **Supply Watchdog**: Autonomous daily monitoring of inventory health, expiry risks, and shortfall prediction.
-- **Scenario Strategist**: Conversational assistant for managers to evaluate shelf-life extension requests and other supply chain queries.
-
-## Features
-- **Automated Expiry Alerts**: Identifies batches at risk of expiry within 90 days and classifies them by criticality.
-- **Shortfall Prediction**: Compares projected demand (from enrollment rates) against current inventory to alert if stock runs out within 8 weeks.
-- **Conversational Query Handling**: Answers ad-hoc queries about batch expiry extension, checking technical, logistical, and regulatory constraints.
-- **Self-Healing SQL Execution**: Agents automatically repair and retry invalid SQL queries using LLM feedback.
-
-## Folder Structure
-```
-Clinical-Supply-Chain-Control-Tower/
-│   .gitignore
-│   env/                # Python virtual environment
-│   src/
-│       .env            # Environment variables
-│       requirements.txt
-│       strategist_agent.py
-│       watchdog_agent.py
-```
-
-## How It Works
-### 1. Supply Watchdog (`watchdog_agent.py`)
-- Runs daily (can be scheduled via cron or task scheduler).
-- Connects to PostgreSQL, executes expiry and shortfall queries.
-- Outputs a structured JSON payload for email/API alerts.
-
-### 2. Scenario Strategist (`strategist_agent.py`)
-- Accepts user queries (e.g., "Can we extend the expiry of Batch #123 for the German trial?").
-- Uses an LLM (Gemini API) to reason through technical, logistical, and regulatory checks.
-- Returns a clear YES/NO answer with supporting data and reasoning.
-
-## Setup Instructions
-1. **Clone the repository**
-2. **Create and activate a Python virtual environment**
-   ```sh
-   python -m venv env
-   source env/bin/activate  # On Windows: env\Scripts\activate
-   ```
-3. **Install dependencies**
-   ```sh
-   pip install -r src/requirements.txt
-   ```
-4. **Configure environment variables**
-   - Create a `.env` file in `src/` with your database and API keys:
-     ```env
-     GEMINI_API_KEY=your_gemini_api_key
-     DB_HOST=
-     DB_NAME=
-     DB_USER=
-     DB_PASSWORD=
-     DB_PORT=5432
-     ```
-5. **Load your clinical data into PostgreSQL**
-   - Use the provided CSVs and schema overview to populate your database.
-
-## Usage
-- **Run Supply Watchdog**
-  ```sh
-  python src/watchdog_agent.py
-  ```
-- **Run Scenario Strategist**
-  ```sh
-  python src/strategist_agent.py
-  ```
-
-## Edge Case Handling
-- **Data Ambiguity**: Agents use fuzzy matching and context to resolve naming mismatches (e.g., "Trial ABC" vs "Trial_ABC_v2").
-- **SQL Errors**: Agents detect invalid SQL, provide error feedback to the LLM, and retry with corrected queries.
-
-## Technologies Used
-- Python 3.13+
-- PostgreSQL
-- Gemini API (Google Generative AI)
-- python-dotenv
-- psycopg2
+## Getting Started
+- See individual README files in `src/` and `n8n/` for setup, configuration, and usage instructions.
+- Load your clinical data into PostgreSQL and configure your environment variables and LLM credentials.
 
 ## License
 This project is for demonstration and educational purposes.
